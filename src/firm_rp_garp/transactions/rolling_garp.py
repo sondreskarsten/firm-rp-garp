@@ -180,8 +180,9 @@ def rolling_window_ccei(
 
 def detect_ccei_break(
     windows: list[WindowResult],
-    drop_threshold: float = 0.05,
-    statistic: Literal["level", "drop"] = "drop",
+    drop_threshold: float = 0.01,
+    statistic: Literal["level", "running_max"] = "running_max",
+    min_consecutive: int = 1,
 ) -> int | None:
     """Detect the first month where rolling CCEI signals a regime break.
 
@@ -190,37 +191,58 @@ def detect_ccei_break(
     windows : list[WindowResult]
         Rolling-window results from :func:`rolling_window_ccei`,
         ordered by window-end date.
-    drop_threshold : float, default 0.05
+    drop_threshold : float, default 0.01
         Minimum CCEI drop (in level units) that qualifies as a break.
-    statistic : {'level', 'drop'}, default 'drop'
+    statistic : {'level', 'running_max'}, default 'running_max'
         Detection rule. ``'level'`` flags when CCEI falls below
-        ``1 - drop_threshold``. ``'drop'`` flags when CCEI drops by
-        more than ``drop_threshold`` from any prior maximum.
+        ``1 - drop_threshold``. ``'running_max'`` flags when CCEI
+        drops by more than ``drop_threshold`` from any prior maximum.
+    min_consecutive : int, default 1
+        Number of consecutive windows that must satisfy the drop
+        condition before firing. ``1`` fires on first qualifying
+        window. Higher values reject transient single-window noise.
 
     Returns
     -------
     int or None
         Index into ``windows`` of the first detected break, or
-        ``None`` if no break is detected.
+        ``None`` if no break is detected. The returned index is the
+        first qualifying window — not the last of the confirming run.
 
     Notes
     -----
-    The ``'drop'`` rule is more robust to firms that consistently
-    operate at a moderate CCEI (e.g. satisficers). The ``'level'``
-    rule is appropriate when one expects rational firms to have
-    CCEI near 1 in the absence of distress.
+    For real bank-data distress detection the rolling-CCEI dip is
+    sustained for the length of the rolling window (12 months by
+    default) because the window straddles the regime shift. A
+    ``min_consecutive`` of 2-3 reliably distinguishes regime shifts
+    from single-window numerical noise without sacrificing detection
+    timing materially.
     """
     if not windows:
         return None
     if statistic == "level":
         threshold = 1.0 - drop_threshold
+        run_start: int | None = None
         for idx, w in enumerate(windows):
             if w.ccei < threshold:
-                return idx
+                if run_start is None:
+                    run_start = idx
+                if idx - run_start + 1 >= min_consecutive:
+                    return run_start
+            else:
+                run_start = None
         return None
-    running_max = windows[0].ccei
-    for idx, w in enumerate(windows):
-        running_max = max(running_max, w.ccei)
-        if running_max - w.ccei > drop_threshold:
-            return idx
-    return None
+    if statistic == "running_max":
+        running_max = windows[0].ccei
+        run_start = None
+        for idx, w in enumerate(windows):
+            running_max = max(running_max, w.ccei)
+            if running_max - w.ccei > drop_threshold:
+                if run_start is None:
+                    run_start = idx
+                if idx - run_start + 1 >= min_consecutive:
+                    return run_start
+            else:
+                run_start = None
+        return None
+    raise ValueError(f"statistic must be level/running_max, got {statistic!r}")

@@ -88,44 +88,70 @@ class TestRollingWindowCCEI:
 class TestDetectCCEIBreak:
     """Tests for the rolling-CCEI break detector."""
 
+    def _make_window(self, end_month: int, ccei: float) -> "WindowResult":
+        from firm_rp_garp.transactions.rolling_garp import WindowResult
+
+        return WindowResult(
+            orgnr="A",
+            window_end_year=2020,
+            window_end_month=end_month,
+            window_size=12,
+            satisfies_garp=ccei >= 1.0,
+            n_violations=0 if ccei >= 1.0 else 1,
+            ccei=ccei,
+            mpi_median=0.0,
+            mpi_max=0.0,
+        )
+
     def test_no_break_returns_none(self) -> None:
         """Constant high CCEI gives no break."""
-        from firm_rp_garp.transactions.rolling_garp import WindowResult
-
-        windows = [
-            WindowResult(
-                orgnr="A",
-                window_end_year=2020,
-                window_end_month=m,
-                window_size=12,
-                satisfies_garp=True,
-                n_violations=0,
-                ccei=1.0,
-                mpi_median=0.0,
-                mpi_max=0.0,
-            )
-            for m in range(1, 13)
-        ]
+        windows = [self._make_window(m, 1.0) for m in range(1, 13)]
         assert detect_ccei_break(windows) is None
 
-    def test_drop_detected(self) -> None:
-        """A CCEI drop is detected at the right index."""
-        from firm_rp_garp.transactions.rolling_garp import WindowResult
-
+    def test_running_max_drop_detected(self) -> None:
+        """A CCEI drop is detected at the right index under running_max."""
         ccei_path = [1.0, 1.0, 1.0, 0.9, 0.85, 0.8]
-        windows = [
-            WindowResult(
-                orgnr="A",
-                window_end_year=2020,
-                window_end_month=m,
-                window_size=12,
-                satisfies_garp=False,
-                n_violations=1,
-                ccei=c,
-                mpi_median=0.0,
-                mpi_max=0.0,
-            )
-            for m, c in zip(range(1, 7), ccei_path)
-        ]
-        idx = detect_ccei_break(windows, drop_threshold=0.05)
+        windows = [self._make_window(m, c) for m, c in zip(range(1, 7), ccei_path)]
+        idx = detect_ccei_break(
+            windows, drop_threshold=0.05, statistic="running_max"
+        )
         assert idx == 3
+
+    def test_min_consecutive_rejects_single_dip(self) -> None:
+        """A single-window dip is rejected when min_consecutive >= 2."""
+        ccei_path = [1.0, 1.0, 1.0, 0.95, 1.0, 1.0]
+        windows = [self._make_window(m, c) for m, c in zip(range(1, 7), ccei_path)]
+        idx = detect_ccei_break(
+            windows,
+            drop_threshold=0.04,
+            statistic="running_max",
+            min_consecutive=2,
+        )
+        assert idx is None
+
+    def test_min_consecutive_accepts_sustained_dip(self) -> None:
+        """A sustained dip fires when min_consecutive=2."""
+        ccei_path = [1.0, 1.0, 1.0, 0.95, 0.94, 0.93]
+        windows = [self._make_window(m, c) for m, c in zip(range(1, 7), ccei_path)]
+        idx = detect_ccei_break(
+            windows,
+            drop_threshold=0.04,
+            statistic="running_max",
+            min_consecutive=2,
+        )
+        assert idx == 3
+
+    def test_level_rule(self) -> None:
+        """The level rule fires when CCEI falls below 1 - threshold."""
+        ccei_path = [1.0, 1.0, 0.95, 1.0]
+        windows = [self._make_window(m, c) for m, c in zip(range(1, 5), ccei_path)]
+        idx = detect_ccei_break(
+            windows, drop_threshold=0.04, statistic="level"
+        )
+        assert idx == 2
+
+    def test_invalid_statistic_raises(self) -> None:
+        """An unknown statistic raises ValueError."""
+        windows = [self._make_window(1, 1.0)]
+        with pytest.raises(ValueError):
+            detect_ccei_break(windows, statistic="garbage")  # type: ignore[arg-type]

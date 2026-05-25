@@ -428,7 +428,7 @@ def generate_distressed_firm(
     alpha: dict[Category, float] | None = None,
     distress_debt_share: float = 0.85,
     monthly_cash_mean: float = 1_000_000.0,
-    distress_cash_decay: float = 0.10,
+    distress_cash_decay: float = 0.0,
     monthly_cash_volatility: float = 0.05,
     n_per_category: int = 3,
     seed: int = 0,
